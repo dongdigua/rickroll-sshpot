@@ -14,7 +14,7 @@ defmodule SSHPot.MixProject do
   # Run "mix help compile.app" to learn about applications.
   def application do
     [
-      extra_applications: [:logger, :ssh, :mnesia],
+      extra_applications: [:logger, :ssh, :mnesia, :inets, :ssl],
       mod: {SSHPot.Application, []}
     ]
   end

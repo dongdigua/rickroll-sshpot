@@ -1,3 +1,0 @@
-- [x] Use mnesia as data storage
-- [ ] re-add ip logging to fit other use cases
-- [ ] write a tool to dump database to csv file
