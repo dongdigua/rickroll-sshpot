@@ -1,0 +1,21 @@
+services:
+  rickroll:
+    image: docker.1ms.run/elixir:alpine # or use another mirror
+    restart: unless-stopped
+    network_mode: host # must be host for better network IO
+    volumes:
+      - .:/rick
+    working_dir: /rick
+    environment:
+      MIX_ENV: prod
+    user: nobody:nobody
+    command:
+      elixir
+      --erl "+P 1024" --erl "+Q 1024"
+      --erl "+hms 256" --erl "+hmbs 256"
+      --erl "-noshell" --erl "-hidden"
+      roll.ex
+    deploy: 
+      resources:
+        limits:
+          memory: 100m
