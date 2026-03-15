@@ -4,18 +4,24 @@ defmodule RickRoll do
   @frame_height 32
   @rick "./astley80.full"
   @port 2233
+  @system_dir ~c"./ssh"
 
   def start() do
     Logger.configure(level: :info)
     :ok = :ssh.start()
     IO.inspect :erlang.memory
-    accept()
+
+    if Code.loaded?(SSHPot) do
+      spawn(&accept/0)
+    else
+      accept()
+    end
   end
 
   def accept() do
     # inet6 is fine since OS uses dual-stack
     {:ok, socket} =
-      :gen_tcp.listen(@port, [:inet6, packet: 0, active: false, reuseaddr: true])
+      :gen_tcp.listen(@port, [:inet, packet: 0, active: false, reuseaddr: true])
     {:ok, _} =
       Agent.start_link(fn -> %{} end, name: :pubkey_store)
     {:ok, _} =
@@ -34,9 +40,9 @@ defmodule RickRoll do
         {:ok, {ip, _}} ->
           if RickRoll.Tracker.should_banish?(ip) do
             Logger.info("Banish #{inspect(ip)} to honeypot")
-            RickRoll.Proxy.pass(client)
+            SSHPot.daemon(client)
           else
-             start_rickroll(client, ip)
+            rickroll(client)
           end
         _ ->
           :gen_tcp.close(client)
@@ -46,10 +52,11 @@ defmodule RickRoll do
     loop_acceptor(socket)
   end
 
-  defp start_rickroll(client, ip) do
-    Logger.info("Got victim #{inspect(client)} from #{inspect(ip)}; memMB: #{:erlang.float_to_binary(:erlang.memory(:total)/1048576, [decimals: 2])}")
+  defp rickroll(client) do
+    {:ok, {ip, _}} = :inet.peername(client)
+    Logger.info("Got victim #{List.to_string(:inet.ntoa(ip))}, memMB: #{:erlang.float_to_binary(:erlang.memory(:total)/1048576, [decimals: 2])}")
     :ssh.daemon(client, [
-          system_dir: ~c"./ssh",
+          system_dir: @system_dir,
           id_string: ~c"SSH-2.0-OpenSSH_RickRoll",
           max_sessions: 1,
           shell: &roll(&1, client),
@@ -80,12 +87,12 @@ defmodule RickRoll do
       now = :os.system_time(:seconds)
       cutoff = now - @window
 
-      Agent.get_and_update(__MODULE__, fn state ->
+      Code.loaded?(SSHPot) and Agent.get_and_update(__MODULE__, fn state ->
         timestamps = Map.get(state, ip, [])
         recent = Enum.filter(timestamps, &(&1 > cutoff))
-        
+
         is_banned = length(recent) > @threshold
-        
+
         new_state = if recent == [] do
           Map.delete(state, ip)
         else
@@ -93,42 +100,6 @@ defmodule RickRoll do
         end
         {is_banned, new_state}
       end)
-    end
-  end
-
-  defmodule Proxy do
-    @honey_ip {127,0,0,1}
-    @honey_port 2222
-
-    require Logger
-    def pass(client_sock) do
-    Logger.info("proxied")
-      case :gen_tcp.connect(@honey_ip, @honey_port, [:binary, packet: 0, active: true]) do
-        {:ok, honey_sock} ->
-          :inet.setopts(client_sock, [active: true])
-          pipe(client_sock, honey_sock)
-        {:error, e} ->
-          Logger.error("Honey connect failed: #{inspect e}")
-          :gen_tcp.close(client_sock)
-      end
-    end
-
-    defp pipe(a, b) do
-      receive do
-        {:tcp, ^a, data} -> 
-          :gen_tcp.send(b, data)
-          pipe(a, b)
-        {:tcp, ^b, data} -> 
-          :gen_tcp.send(a, data)
-          pipe(a, b)
-        {:tcp_closed, _} ->
-          :gen_tcp.close(a)
-          :gen_tcp.close(b)
-        msg -> 
-          Logger.error("Proxy unexpected: #{inspect msg}")
-          :gen_tcp.close(a)
-          :gen_tcp.close(b)
-      end
     end
   end
 
@@ -167,20 +138,23 @@ defmodule RickRoll do
       {"", "", "password: ", false}
     end
 
-    def pwdfun(_user, pass, {ip, _} = peer, _state) when @difficulty > 0 do
-      # 延迟获取 nonce
+    def pwdfun(user, pass, {ip, _} = peer, _state) when @difficulty > 0 do
       nonce = Agent.get(__MODULE__, fn state -> Map.get(state, peer) end)
-      
+
       if is_nil(nonce) do
-        # 没经过 kb_int 流程（即直接用了 password 认证），视为恶意扫描
-        Logger.warning("Bot detected: Direct password attempt from #{List.to_string(:inet.ntoa(ip))}")
+        # 没经过 kb_int 流程（即直接用了 password 认证），视为扫描
+        Logger.warning("Bot detected: Direct password attempt: #{List.to_string(:inet.ntoa(ip))},#{user},#{pass}")
         RickRoll.Tracker.mark(ip)
-        :disconnect
+        if RickRoll.Tracker.should_banish?(ip) do
+          :disconnect
+        else
+          false
+        end
       else
         # 正常的 PoW 流程
         Agent.update(__MODULE__, fn state -> Map.delete(state, peer) end)
         Logger.info("PoW: #{pass}")
-        
+
         hash = :crypto.hash(:sm3, nonce <> IO.chardata_to_string(pass)) |> :binary.encode_hex()
         if String.starts_with?(hash, @prefix) do
           true

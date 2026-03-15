@@ -1,7 +1,5 @@
 defmodule SSHPot do
   require Logger
-  @sys_dir String.to_charlist(Path.expand(".") <> "/ssh")
-  @port 2222
 
   def set_random_login(n) do
     Application.put_env(:sshpot_ex, :random_login, n)
@@ -10,17 +8,21 @@ defmodule SSHPot do
   def start_link do
     Logger.info("Starting... timestamp: #{System.os_time()}")
 
-    {:ok, _} = :ssh.daemon(@port,
-      system_dir: @sys_dir,
+    if port = Application.get_env(:sshpot_ex, :port),
+      do: daemon(port)
+
+    Agent.start_link(fn -> %{} end, name: __MODULE__)
+  end
+
+  def daemon(port_or_client),
+    do: {:ok, _} = :ssh.daemon(port_or_client,
+      system_dir: Application.get_env(:sshpot_ex, :system_dir),
       id_string: ~c"OpenSSH_10.2",
       shell: &shell/2,
       pwdfun: &log_passwd/4,
       auth_methods: ~c"password",
       exec: &exec/3
     )
-
-    Agent.start_link(fn -> %{} end, name: __MODULE__)
-  end
 
   def exec(cmd, username, peer) do
     spawn(fn ->
